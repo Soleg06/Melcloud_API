@@ -13,10 +13,15 @@ Settting the desired state to the HVAC uses the name of the HVAC and a dict with
 where
 
 P : Power           (0 = off, 1 = on)
+
 M : Mode            (0 = Heat, 1 = AC, 2 = Auto, 4 = Fan, 5 = Dry)
+
 T : Temperature     (10 -30 degrees)
+
 F : Fan             (0=auto, 1-4 fan modes)
+
 V : Vertical vane   (0 = auto, 6 = split, 7 = swing, 1-5 vane positions)
+
 H : Horizontal vane (0 = auto, 7 = swing, 1-5 vane positions)
 
 
