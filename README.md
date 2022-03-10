@@ -22,5 +22,5 @@ H : Horizontal vane (0 = auto, 7 = swing, 1-5 vane positions)
 note you only need to send the state that you want changed:
 i.e if you want to change Fan to state 4 you just send
 
-{"F":3}
+{"F":4}
 ```
