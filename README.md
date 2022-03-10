@@ -7,7 +7,7 @@ The program can be places in your own integration as one file, it doesen't requi
 Please find example usage in the example file. The funcions usally return dicts that I have found the be useful in my other intregrations.
 
 Settting the desired state to the HVAC uses the name of the HVAC and a dict with the state you want to change to such as this:
-
+```
 {"P":0, "M":1, "T":21, "F":3, "H":0, "V":0}
 
 where
@@ -23,3 +23,4 @@ note you only need to send the state that you want changed:
 i.e if you want to change Fan to state 4 you just send
 
 {"F":3}
+```
