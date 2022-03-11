@@ -32,8 +32,7 @@ class Melcloud:
         self.devices = dict()
         self.ata = dict()
 
-
-    def getDevices(self):
+    def _getDevices(self):
 
         r = self.session.get("https://app.melcloud.com/Mitsubishi.Wifi.Client/User/Listdevices", headers=self.headers)
         entries = json.loads(r.text)
@@ -75,7 +74,6 @@ class Melcloud:
             if (self.devices[device]["DeviceID"] == self.ata["DeviceID"]):
                 devName = device
 
-        #info[entry["DeviceID"]] = {}
         self.devices[devName]["RoomTemp"] = self.ata["RoomTemperature"]
 
         self.devices[devName]["CurrentState"] = dict()
@@ -92,7 +90,7 @@ class Melcloud:
 
     def getAllDevice(self):
 
-        self.getDevices()
+        self._getDevices()
 
         for device in self.devices:
             self.getOneDevice(self.devices[device]["DeviceID"], self.devices[device]["BuildingID"])
