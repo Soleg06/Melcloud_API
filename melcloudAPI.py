@@ -4,6 +4,7 @@
 import requests
 import json
 import arrow
+from pprint import pprint
 
 class Melcloud:
 
@@ -15,27 +16,69 @@ class Melcloud:
             }
         self.session = requests.Session()
 
+        self.powerModeTranslate = {
+                0 : False,
+                1 : True
+                }
+
+        self.operationModeTranslate  = {
+                0 : 1,  # Heat
+                1 : 3,  # AC
+                2 : 8,  # Auto
+                4 : 7,  # Fan
+                5 : 2   # Dry
+                }
+
+        self.horizontalVaneTranslate = {
+               0 : 0,   #_Auto
+               1 : 1,   # Pos 1
+               2 : 2,   # Pos 2
+               3 : 3,   # Pos 3
+               4 : 4,   # Pos 4
+               5 : 5,   # Pos 5
+               6 : 8,   # Split
+               7 : 12   # Swing
+               }
+
+        self.verticalVaneTranslate = {
+               0 : 0,   #_Auto
+               1 : 1,   # Pos 1
+               2 : 2,   # Pos 2
+               3 : 3,   # Pos 3
+               4 : 4,   # Pos 4
+               5 : 5,   # Pos 5
+               6 : 7    # Swing
+               }
+
     def login(self, user, password):
 
         data = {
             "Email":user,
             "Password":password,
-            "Language":18,   # Swedish
+            "Language":18,
             "AppVersion":"1.23.4.0"
             }
 
-        r = self.session.post("https://app.melcloud.com/Mitsubishi.Wifi.Client/Login/ClientLogin", headers=self.headers, data=json.dumps(data))
+        response = self.session.post("https://app.melcloud.com/Mitsubishi.Wifi.Client/Login/ClientLogin", headers=self.headers, data=json.dumps(data))
+        response.raise_for_status()
+        out= json.loads(response.text)
 
-        out= json.loads(r.text)
         token = out['LoginData']['ContextKey']
         self.headers["X-MitsContextKey"]=token
         self.devices = dict()
         self.ata = dict()
 
-    def _getDevices(self):
 
-        r = self.session.get("https://app.melcloud.com/Mitsubishi.Wifi.Client/User/Listdevices", headers=self.headers)
-        entries = json.loads(r.text)
+    def _lookupValue(self, di, value):
+        result = [k for k in di.items() if k[1] == value][0][0]
+        return result
+
+
+    def getDevices(self):
+
+        response = self.session.get("https://app.melcloud.com/Mitsubishi.Wifi.Client/User/Listdevices", headers=self.headers)
+        response.raise_for_status()
+        entries = json.loads(response.text)
 
         allDevices = []
 
@@ -67,8 +110,9 @@ class Melcloud:
                 "buildingID": buildingID
                 }
 
-        r = self.session.get("https://app.melcloud.com/Mitsubishi.Wifi.Client/Device/Get", headers=self.headers, params = params)
-        self.ata = json.loads(r.text)
+        response = self.session.get("https://app.melcloud.com/Mitsubishi.Wifi.Client/Device/Get", headers=self.headers, params = params)
+        response.raise_for_status()
+        self.ata = json.loads(response.text)
 
         for device in self.devices:
             if (self.devices[device]["DeviceID"] == self.ata["DeviceID"]):
@@ -76,26 +120,31 @@ class Melcloud:
 
         self.devices[devName]["RoomTemp"] = self.ata["RoomTemperature"]
 
+        #print(f"P  {self.ata['Power']}")
+        #print(f"M  {self.ata['OperationMode']}")
+        #print(f"T  {self.ata['SetTemperature']}")
+        #print(f"F  {self.ata['SetFanSpeed']}")
+        #print(f"V  {self.ata['VaneVertical']}")
+        #print(f"H  {self.ata['VaneHorizontal']}")
+
         self.devices[devName]["CurrentState"] = dict()
-        if (self.ata["Power"]) :
-            self.devices[devName]["CurrentState"]["P"] = 1
-        else:
-            self.devices[devName]["CurrentState"]["P"] = 0
-        self.devices[devName]["CurrentState"]["M"] = self.ata["OperationMode"]
+        self.devices[devName]["CurrentState"]["P"] = self._lookupValue(self.powerModeTranslate, self.ata["Power"])
+        self.devices[devName]["CurrentState"]["M"] = self._lookupValue(self.operationModeTranslate, self.ata["OperationMode"])
         self.devices[devName]["CurrentState"]["T"] = self.ata["SetTemperature"]
         self.devices[devName]["CurrentState"]["F"] = self.ata["SetFanSpeed"]
-        self.devices[devName]["CurrentState"]["V"] = self.ata["VaneVertical"]
-        self.devices[devName]["CurrentState"]["H"] = self.ata["VaneHorizontal"]
+        self.devices[devName]["CurrentState"]["V"] = self._lookupValue(self.verticalVaneTranslate, self.ata["VaneVertical"])
+        self.devices[devName]["CurrentState"]["H"] = self._lookupValue(self.horizontalVaneTranslate, self.ata["VaneHorizontal"])
 
 
     def getAllDevice(self):
 
-        self._getDevices()
+        self.getDevices()
 
         for device in self.devices:
             self.getOneDevice(self.devices[device]["DeviceID"], self.devices[device]["BuildingID"])
 
         return self.devices
+
 
     def getDevicesInfo(self):
 
@@ -114,51 +163,18 @@ class Melcloud:
             print(f"""P : {self.devices[device]["CurrentState"]['P']}, M : {self.devices[device]["CurrentState"]['M']}, T : {self.devices[device]["CurrentState"]['T']}, F : {self.devices[device]["CurrentState"]['F']}, V : {self.devices[device]["CurrentState"]['V']}, H : {self.devices[device]["CurrentState"]['H']}""")
             print("\n")
 
+
     def setOneDeviceInfo(self, deviceName, desiredState):
-
-        powerModeTranslate = {
-                0 : False,
-                1 : True
-                }
-
-        operationModeTranslate  = {
-                0 : 1,  # Heat
-                1 : 3,  # AC
-                2 : 8,  # Auto
-                4 : 7,  # Fan
-                5 : 2   # Dry
-                }
-
-        horizontalVaneTranslate = {
-               0 : 0,   #_Auto
-               1 : 1,   # Pos 1
-               2 : 2,   # Pos 2
-               3 : 3,   # Pos 3
-               4 : 4,   # Pos 4
-               5 : 5,   # Pos 5
-               6 : 8,   # Split
-               7 : 12   # Swing
-               }
-
-        verticalVaneTranslate = {
-               0 : 0,   #_Auto
-               1 : 1,   # Pos 1
-               2 : 2,   # Pos 2
-               3 : 3,   # Pos 3
-               4 : 4,   # Pos 4
-               5 : 5,   # Pos 5
-               6 : 7    # Swing
-               }
 
         self.ata["DeviceID"] = self.devices[deviceName]["DeviceID"]
         #self.ata["EffectiveFlags"] = 8
 
         if desiredState.get("P") != None:
-            self.ata["Power"] = powerModeTranslate[desiredState["P"]]
+            self.ata["Power"] = self.powerModeTranslate[desiredState["P"]]
             self.ata["EffectiveFlags"] |= 0x01
 
         if desiredState.get("M") != None:
-            self.ata["OperationMode"] = operationModeTranslate[desiredState["M"]]
+            self.ata["OperationMode"] = self.operationModeTranslate[desiredState["M"]]
             self.ata["EffectiveFlags"] |= 0x02
 
         if desiredState.get("T") != None:
@@ -170,15 +186,16 @@ class Melcloud:
             self.ata["EffectiveFlags"] |= 0x08
 
         if desiredState.get("V") != None:
-            self.ata["VaneVertical"] = verticalVaneTranslate[desiredState["V"]]
+            self.ata["VaneVertical"] = self.verticalVaneTranslate[desiredState["V"]]
             self.ata["EffectiveFlags"] |= 0x10
 
         if desiredState.get("H") != None:
-            self.ata["VaneHorizontal"] = horizontalVaneTranslate[desiredState["H"]]
+            self.ata["VaneHorizontal"] = self.horizontalVaneTranslate[desiredState["H"]]
             self.ata["EffectiveFlags"] |= 0x100
 
-        r = self.session.post(" https://app.melcloud.com/Mitsubishi.Wifi.Client/Device/SetAta", headers=self.headers, data=json.dumps(self.ata))
-        self.ata = json.loads(r.text)
+        response = self.session.post(" https://app.melcloud.com/Mitsubishi.Wifi.Client/Device/SetAta", headers=self.headers, data=json.dumps(self.ata))
+        response.raise_for_status()
+        self.ata = json.loads(response.text)
         self.ata["EffectiveFlags"] = 0
 
-
+        return self.ata
