@@ -11,7 +11,6 @@ from requests.packages.urllib3.util.retry import Retry
 
 DEFAULT_TIMEOUT = 20  # seconds
 
-
 class TimeoutHTTPAdapter(HTTPAdapter):
 
     def __init__(self, *args, **kwargs):
@@ -99,8 +98,7 @@ class Melcloud:
         self.ata = dict()
 
         try:
-            response = self.session.post(
-                "https://app.melcloud.com/Mitsubishi.Wifi.Client/Login/ClientLogin", headers=self.headers, data=json.dumps(data))
+            response = self.session.post("https://app.melcloud.com/Mitsubishi.Wifi.Client/Login/ClientLogin", headers=self.headers, data=json.dumps(data))
             # response.raise_for_status()
             out = json.loads(response.text)
             # pprint(out)
@@ -117,8 +115,7 @@ class Melcloud:
     def getDevices(self):
 
         try:
-            response = self.session.get(
-                "https://app.melcloud.com/Mitsubishi.Wifi.Client/User/Listdevices", headers=self.headers)
+            response = self.session.get("https://app.melcloud.com/Mitsubishi.Wifi.Client/User/Listdevices", headers=self.headers)
             # response.raise_for_status()
             entries = json.loads(response.text)
 
@@ -139,10 +136,8 @@ class Melcloud:
                 self.devices[aa["DeviceName"]] = {}
                 self.devices[aa["DeviceName"]]["DeviceID"] = aa["DeviceID"]
                 self.devices[aa["DeviceName"]]["BuildingID"] = aa["BuildingID"]
-                self.devices[aa["DeviceName"]
-                             ]["CurrentEnergyConsumed"] = aa["Device"]["CurrentEnergyConsumed"]
-                self.devices[aa["DeviceName"]]["LastTimeStamp"] = arrow.get(
-                    aa["Device"]["LastTimeStamp"]).format("YYYY-MM-DD HH:mm")
+                self.devices[aa["DeviceName"]]["CurrentEnergyConsumed"] = aa["Device"]["CurrentEnergyConsumed"]
+                self.devices[aa["DeviceName"]]["LastTimeStamp"] = arrow.get(aa["Device"]["LastTimeStamp"]).format("YYYY-MM-DD HH:mm")
 
         except Exception as e:
             print(e)
@@ -155,8 +150,7 @@ class Melcloud:
         }
 
         try:
-            response = self.session.get(
-                "https://app.melcloud.com/Mitsubishi.Wifi.Client/Device/Get", headers=self.headers, params=params)
+            response = self.session.get("https://app.melcloud.com/Mitsubishi.Wifi.Client/Device/Get", headers=self.headers, params=params)
             # response.raise_for_status()
             self.ata = json.loads(response.text)
 
@@ -174,16 +168,12 @@ class Melcloud:
             #print(f"H  {self.ata['VaneHorizontal']}")
 
             self.devices[devName]["CurrentState"] = dict()
-            self.devices[devName]["CurrentState"]["P"] = self._lookupValue(
-                self.powerModeTranslate, self.ata["Power"])
-            self.devices[devName]["CurrentState"]["M"] = self._lookupValue(
-                self.operationModeTranslate, self.ata["OperationMode"])
+            self.devices[devName]["CurrentState"]["P"] = self._lookupValue(self.powerModeTranslate, self.ata["Power"])
+            self.devices[devName]["CurrentState"]["M"] = self._lookupValue(self.operationModeTranslate, self.ata["OperationMode"])
             self.devices[devName]["CurrentState"]["T"] = self.ata["SetTemperature"]
             self.devices[devName]["CurrentState"]["F"] = self.ata["SetFanSpeed"]
-            self.devices[devName]["CurrentState"]["V"] = self._lookupValue(
-                self.verticalVaneTranslate, self.ata["VaneVertical"])
-            self.devices[devName]["CurrentState"]["H"] = self._lookupValue(
-                self.horizontalVaneTranslate, self.ata["VaneHorizontal"])
+            self.devices[devName]["CurrentState"]["V"] = self._lookupValue(self.verticalVaneTranslate, self.ata["VaneVertical"])
+            self.devices[devName]["CurrentState"]["H"] = self._lookupValue(self.horizontalVaneTranslate, self.ata["VaneHorizontal"])
 
         except Exception as e:
             print(e)
@@ -193,10 +183,10 @@ class Melcloud:
         self.getDevices()
 
         for device in self.devices:
-            self.getOneDevice(
-                self.devices[device]["DeviceID"], self.devices[device]["BuildingID"])
+            self.getOneDevice(self.devices[device]["DeviceID"], self.devices[device]["BuildingID"])
 
         return self.devices
+
 
     def getDevicesInfo(self):
 
@@ -208,8 +198,7 @@ class Melcloud:
             print(f"{device} :")
             print(f"DeviceID: {self.devices[device]['DeviceID']}")
             print(f"BuildingID: {self.devices[device]['BuildingID']}")
-            print(
-                f"CurrentEnergyConsumed: {self.devices[device]['CurrentEnergyConsumed']}")
+            print(f"CurrentEnergyConsumed: {self.devices[device]['CurrentEnergyConsumed']}")
             print(f"LastTimeStamp: {self.devices[device]['LastTimeStamp']}")
             print(f"RoomTemperature: {self.devices[device]['RoomTemp']}")
             print(f"""P : {self.devices[device]["CurrentState"]['P']}, M : {self.devices[device]["CurrentState"]['M']}, T : {self.devices[device]["CurrentState"]['T']}, F : {self.devices[device]["CurrentState"]['F']}, V : {self.devices[device]["CurrentState"]['V']}, H : {self.devices[device]["CurrentState"]['H']}""")
@@ -245,8 +234,7 @@ class Melcloud:
                 self.ata["VaneHorizontal"] = self.horizontalVaneTranslate[desiredState["H"]]
                 self.ata["EffectiveFlags"] |= 0x100
 
-            response = self.session.post(
-                " https://app.melcloud.com/Mitsubishi.Wifi.Client/Device/SetAta", headers=self.headers, data=json.dumps(self.ata))
+            response = self.session.post(" https://app.melcloud.com/Mitsubishi.Wifi.Client/Device/SetAta", headers=self.headers, data=json.dumps(self.ata))
             # response.raise_for_status()
             self.ata = json.loads(response.text)
             self.ata["EffectiveFlags"] = 0
