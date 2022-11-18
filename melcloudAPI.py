@@ -210,27 +210,27 @@ class Melcloud:
             self.ata["DeviceID"] = self.devices[deviceName]["DeviceID"]
             #self.ata["EffectiveFlags"] = 8
 
-            if desiredState.get("P") != None:
+            if desiredState.get("P") is not None:
                 self.ata["Power"] = self.powerModeTranslate[desiredState["P"]]
                 self.ata["EffectiveFlags"] |= 0x01
 
-            if desiredState.get("M") != None:
+            if desiredState.get("M") is not None:
                 self.ata["OperationMode"] = self.operationModeTranslate[desiredState["M"]]
                 self.ata["EffectiveFlags"] |= 0x02
 
-            if desiredState.get("T") != None:
+            if desiredState.get("T") is not None:
                 self.ata["SetTemperature"] = desiredState["T"]
                 self.ata["EffectiveFlags"] |= 0x04
 
-            if desiredState.get("F") != None:
+            if desiredState.get("F") is not None:
                 self.ata["SetFanSpeed"] = desiredState["F"]
                 self.ata["EffectiveFlags"] |= 0x08
 
-            if desiredState.get("V") != None:
+            if desiredState.get("V") is not None:
                 self.ata["VaneVertical"] = self.verticalVaneTranslate[desiredState["V"]]
                 self.ata["EffectiveFlags"] |= 0x10
 
-            if desiredState.get("H") != None:
+            if desiredState.get("H") is not None:
                 self.ata["VaneHorizontal"] = self.horizontalVaneTranslate[desiredState["H"]]
                 self.ata["EffectiveFlags"] |= 0x100
 
