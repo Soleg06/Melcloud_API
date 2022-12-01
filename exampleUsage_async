@@ -1,0 +1,27 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+import asyncio
+
+from melcloudAPI_async import *
+from pprint import pprint
+
+
+async def main():
+    
+    mc = Melcloud()
+    await mc.login("firstname.lastname@someting.com","**********")
+
+    mel_devinfo = await mc.getAllDevice()
+    pprint(mel_devinfo)
+
+    vp_uppe = mel_devinfo["Vp_uppe"]["CurrentState"]
+    pprint(vp_uppe)
+
+    await mc.printDevicesInfo()
+    #mc.setOneDeviceInfo("Vp_nere", {"P":0, "M":99, "T":98, "F":97, "H":96, "V":95})
+    #mc.setOneDeviceInfo("Vp_nere", {"T":21})
+    #mc.setOneDeviceInfo("Vp_uppe", {"P":1})
+    #await mc.logout()
+
+    
+asyncio.run(main())
