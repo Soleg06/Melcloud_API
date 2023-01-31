@@ -78,15 +78,25 @@ class Melcloud:
         try:
             out = await self._doSession(method="POST", url="https://app.melcloud.com/Mitsubishi.Wifi.Client/Login/ClientLogin", headers=self.headers, data=json.dumps(data))
             token = out['LoginData']['ContextKey']
+            self.tokenExpires = arrow.get(out['LoginData']['Expiry']).to("Europe/Stockholm")
             self.headers["X-MitsContextKey"] = token
 
         except Exception as e:
             print(e)
 
 
+    async def _validateToken(self):
+    
+        now = arrow.now("Europe/Stockholm")
+        if now >= self.tokenExpires:
+            print("login again")
+            await self.login()
+
+
     async def _lookupValue(self, di, value):
         result = [k for k in di.items() if k[1] == value][0][0]
         return result
+
 
     async def logout(self):
         #await self.session.close()
@@ -95,6 +105,7 @@ class Melcloud:
         
     async def getDevices(self):
 
+        await self._validateToken() 
         try:
             entries = await self._doSession(method="GET", url="https://app.melcloud.com/Mitsubishi.Wifi.Client/User/Listdevices", headers=self.headers)
 
@@ -158,7 +169,8 @@ class Melcloud:
 
 
     async def getAllDevice(self):
-
+        
+        await self._validateToken() 
         await self.getDevices()
 
         for device in self.devices:
@@ -186,17 +198,18 @@ class Melcloud:
             
 
     async def setOneDeviceInfo(self, deviceName, desiredState):
-
+        
+        await self._validateToken() 
         try:
             self.ata["DeviceID"] = self.devices[deviceName]["DeviceID"]
             #self.ata["EffectiveFlags"] = 8
 
             if desiredState.get("P") is not None:
-                self.ata["Power"] = await self.powerModeTranslate[desiredState["P"]]
+                self.ata["Power"] = self.powerModeTranslate[desiredState["P"]]
                 self.ata["EffectiveFlags"] |= 0x01
 
             if desiredState.get("M") is not None:
-                self.ata["OperationMode"] = await self.operationModeTranslate[desiredState["M"]]
+                self.ata["OperationMode"] = self.operationModeTranslate[desiredState["M"]]
                 self.ata["EffectiveFlags"] |= 0x02
 
             if desiredState.get("T") is not None:
@@ -208,14 +221,14 @@ class Melcloud:
                 self.ata["EffectiveFlags"] |= 0x08
 
             if desiredState.get("V") is not None:
-                self.ata["VaneVertical"] = await self.verticalVaneTranslate[desiredState["V"]]
+                self.ata["VaneVertical"] = self.verticalVaneTranslate[desiredState["V"]]
                 self.ata["EffectiveFlags"] |= 0x10
 
             if desiredState.get("H") is not None:
-                self.ata["VaneHorizontal"] = await self.horizontalVaneTranslate[desiredState["H"]]
+                self.ata["VaneHorizontal"] = self.horizontalVaneTranslate[desiredState["H"]]
                 self.ata["EffectiveFlags"] |= 0x100
 
-            self.ata = await self._doSession(method="GET", url="https://app.melcloud.com/Mitsubishi.Wifi.Client/Device/SetAta", headers=self.headers, data=json.dumps(self.ata))
+            self.ata = await self._doSession(method="POST", url="https://app.melcloud.com/Mitsubishi.Wifi.Client/Device/SetAta", headers=self.headers, data=json.dumps(self.ata))
 
             self.ata["EffectiveFlags"] = 0
 
