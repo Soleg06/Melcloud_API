@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import json
-from pprint import pprint
 import asyncio
-import aiohttp
+from pprint import pprint
 
+import aiohttp
 import arrow
+import ujson
 
 
 class Melcloud:
 
     def __init__(self):
-
         self.headers = {
             "Content-Type": "application/json",
             "Host": "app.melcloud.com",
@@ -54,7 +53,7 @@ class Melcloud:
         }
 
     async def _doSession(self, method, url, headers, data=None, params=None, auth=None):
-    
+        await asyncio.sleep(1)
         async with aiohttp.ClientSession() as session:
             async with session.request(method=method, url=url, headers=headers, data=data, params=params, auth=auth) as response:
                 try:
@@ -64,7 +63,6 @@ class Melcloud:
                 
             
     async def login(self, user, password):
-
         data = {
             "Email": user,
             "Password": password,
@@ -76,7 +74,7 @@ class Melcloud:
         self.ata = dict()
 
         try:
-            out = await self._doSession(method="POST", url="https://app.melcloud.com/Mitsubishi.Wifi.Client/Login/ClientLogin", headers=self.headers, data=json.dumps(data))
+            out = await self._doSession(method="POST", url="https://app.melcloud.com/Mitsubishi.Wifi.Client/Login/ClientLogin", headers=self.headers, data=ujson.dumps(data))
             token = out['LoginData']['ContextKey']
             self.tokenExpires = arrow.get(out['LoginData']['Expiry']).to("Europe/Stockholm")
             self.headers["X-MitsContextKey"] = token
@@ -86,7 +84,6 @@ class Melcloud:
 
 
     async def _validateToken(self):
-    
         now = arrow.now("Europe/Stockholm")
         if now >= self.tokenExpires:
             print("login again")
@@ -104,7 +101,6 @@ class Melcloud:
         
         
     async def getDevices(self):
-
         await self._validateToken() 
         try:
             entries = await self._doSession(method="GET", url="https://app.melcloud.com/Mitsubishi.Wifi.Client/User/Listdevices", headers=self.headers)
@@ -134,7 +130,6 @@ class Melcloud:
 
 
     async def getOneDevice(self, deviceID, buildingID):
-
         params = {
             "id": deviceID,
             "buildingID": buildingID
@@ -169,7 +164,6 @@ class Melcloud:
 
 
     async def getAllDevice(self):
-        
         await self._validateToken() 
         await self.getDevices()
 
@@ -180,12 +174,10 @@ class Melcloud:
 
 
     async def getDevicesInfo(self):
-
         return self.devices
     
 
     async def printDevicesInfo(self):
-
         for device in self.devices:
             print(f"{device} :")
             print(f"DeviceID: {self.devices[device]['DeviceID']}")
@@ -198,7 +190,6 @@ class Melcloud:
             
 
     async def setOneDeviceInfo(self, deviceName, desiredState):
-        
         await self._validateToken() 
         try:
             self.ata["DeviceID"] = self.devices[deviceName]["DeviceID"]
@@ -228,7 +219,7 @@ class Melcloud:
                 self.ata["VaneHorizontal"] = self.horizontalVaneTranslate[desiredState["H"]]
                 self.ata["EffectiveFlags"] |= 0x100
 
-            self.ata = await self._doSession(method="POST", url="https://app.melcloud.com/Mitsubishi.Wifi.Client/Device/SetAta", headers=self.headers, data=json.dumps(self.ata))
+            self.ata = await self._doSession(method="POST", url="https://app.melcloud.com/Mitsubishi.Wifi.Client/Device/SetAta", headers=self.headers, data=ujson.dumps(self.ata))
 
             self.ata["EffectiveFlags"] = 0
 
