@@ -11,6 +11,8 @@ import ujson
 
 class Melcloud:
 
+    devices = {}
+    
     def __init__(self):
         self.headers = {
             "Content-Type": "application/json",
@@ -51,15 +53,19 @@ class Melcloud:
             5: 5,   # Pos 5
             6: 7    # Swing
         }
+        self.session = aiohttp.ClientSession(base_url="https://app.melcloud.com")
 
     async def _doSession(self, method, url, headers, data=None, params=None, auth=None):
-        await asyncio.sleep(1)
-        async with aiohttp.ClientSession() as session:
-            async with session.request(method=method, url=url, headers=headers, data=data, params=params, auth=auth) as response:
+        try:
+            await asyncio.sleep(1)
+            async with self.session.request(method=method, url=url, headers=headers, data=data, params=params, auth=auth) as response:
                 try:
                     return await response.json()
                 except:
                     return await response.text()
+        except Exception as e:
+            print(f"Error occurred: {e}")
+            return None
                 
             
     async def login(self, user, password):
@@ -74,7 +80,7 @@ class Melcloud:
         self.ata = dict()
 
         try:
-            out = await self._doSession(method="POST", url="https://app.melcloud.com/Mitsubishi.Wifi.Client/Login/ClientLogin", headers=self.headers, data=ujson.dumps(data))
+            out = await self._doSession(method="POST", url="/Mitsubishi.Wifi.Client/Login/ClientLogin", headers=self.headers, data=ujson.dumps(data))
             token = out['LoginData']['ContextKey']
             self.tokenExpires = arrow.get(out['LoginData']['Expiry']).to("Europe/Stockholm")
             self.headers["X-MitsContextKey"] = token
@@ -90,10 +96,12 @@ class Melcloud:
             await self.login()
 
 
-    async def _lookupValue(self, di, value):
-        result = [k for k in di.items() if k[1] == value][0][0]
-        return result
-
+    def _lookupValue(self, di, value):
+        #result = [k for k in di.items() if k[1] == value][0][0]
+        for key, val in di.items():
+            if val == value:
+                return key
+        return None
 
     async def logout(self):
         #await self.session.close()
@@ -101,46 +109,47 @@ class Melcloud:
         
         
     async def getDevices(self):
-        await self._validateToken() 
-        try:
-            entries = await self._doSession(method="GET", url="https://app.melcloud.com/Mitsubishi.Wifi.Client/User/Listdevices", headers=self.headers)
+        if not self.devices:
+            await self._validateToken() 
+            try:
+                entries = await self._doSession(method="GET", url="/Mitsubishi.Wifi.Client/User/Listdevices", headers=self.headers)
 
-            allDevices = []
-            for entry in entries:
-                allDevices += entry["Structure"]["Devices"]
+                allDevices = []
+                for entry in entries:
+                    allDevices += entry["Structure"]["Devices"]
 
-                for area in entry["Structure"]["Areas"]:
-                    allDevices += area["Devices"]
-
-                for floor in entry["Structure"]["Floors"]:
-                    allDevices += floor["Devices"]
-
-                    for area in floor["Areas"]:
+                    for area in entry["Structure"]["Areas"]:
                         allDevices += area["Devices"]
 
-            for aa in allDevices:
-                self.devices[aa["DeviceName"]] = {}
-                self.devices[aa["DeviceName"]]["DeviceID"] = aa["DeviceID"]
-                self.devices[aa["DeviceName"]]["BuildingID"] = aa["BuildingID"]
-                self.devices[aa["DeviceName"]]["CurrentEnergyConsumed"] = aa["Device"]["CurrentEnergyConsumed"]
-                self.devices[aa["DeviceName"]]["LastTimeStamp"] = arrow.get(aa["Device"]["LastTimeStamp"]).format("YYYY-MM-DD HH:mm")
+                    for floor in entry["Structure"]["Floors"]:
+                        allDevices += floor["Devices"]
 
-        except Exception as e:
-            print(e)
+                        for area in floor["Areas"]:
+                            allDevices += area["Devices"]
+
+                for aa in allDevices:
+                    self.devices[aa["DeviceName"]] = {}
+                    self.devices[aa["DeviceName"]]["DeviceID"] = aa["DeviceID"]
+                    self.devices[aa["DeviceName"]]["BuildingID"] = aa["BuildingID"]
+                    self.devices[aa["DeviceName"]]["CurrentEnergyConsumed"] = aa["Device"]["CurrentEnergyConsumed"]
+                    self.devices[aa["DeviceName"]]["LastTimeStamp"] = arrow.get(aa["Device"]["LastTimeStamp"]).format("YYYY-MM-DD HH:mm")
+
+            except Exception as e:
+                print(e)
 
 
-    async def getOneDevice(self, deviceID, buildingID):
+    async def getOneDevice(self, devName, deviceID, buildingID):
         params = {
             "id": deviceID,
             "buildingID": buildingID
         }
 
         try:
-            self.ata = await self._doSession(method="GET", url="https://app.melcloud.com/Mitsubishi.Wifi.Client/Device/Get", headers=self.headers, params=params)
+            self.ata = await self._doSession(method="GET", url="/Mitsubishi.Wifi.Client/Device/Get", headers=self.headers, params=params)
 
-            for device in self.devices:
-                if (self.devices[device]["DeviceID"] == self.ata["DeviceID"]):
-                    devName = device
+            #for device in self.devices:
+            #    if (self.devices[device]["DeviceID"] == self.ata["DeviceID"]):
+            #        devName = device      
 
             self.devices[devName]["RoomTemp"] = self.ata["RoomTemperature"]
 
@@ -152,12 +161,13 @@ class Melcloud:
             #print(f"H  {self.ata['VaneHorizontal']}")
 
             self.devices[devName]["CurrentState"] = dict()
-            self.devices[devName]["CurrentState"]["P"] = await self._lookupValue(self.powerModeTranslate, self.ata["Power"])
-            self.devices[devName]["CurrentState"]["M"] = await self._lookupValue(self.operationModeTranslate, self.ata["OperationMode"])
+            self.devices[devName]["CurrentState"]["P"] = self._lookupValue(self.powerModeTranslate, self.ata["Power"])
+            self.devices[devName]["CurrentState"]["M"] = self._lookupValue(self.operationModeTranslate, self.ata["OperationMode"])
             self.devices[devName]["CurrentState"]["T"] = self.ata["SetTemperature"]
             self.devices[devName]["CurrentState"]["F"] = self.ata["SetFanSpeed"]
-            self.devices[devName]["CurrentState"]["V"] = await self._lookupValue(self.verticalVaneTranslate, self.ata["VaneVertical"])
-            self.devices[devName]["CurrentState"]["H"] = await self._lookupValue(self.horizontalVaneTranslate, self.ata["VaneHorizontal"])
+            self.devices[devName]["CurrentState"]["V"] = self._lookupValue(self.verticalVaneTranslate, self.ata["VaneVertical"])
+            self.devices[devName]["CurrentState"]["H"] = self._lookupValue(self.horizontalVaneTranslate, self.ata["VaneHorizontal"])
+            self.devices[devName]["hasPendingCommand"] = self.ata["HasPendingCommand"]
 
         except Exception as e:
             print(e)
@@ -167,8 +177,8 @@ class Melcloud:
         await self._validateToken() 
         await self.getDevices()
 
-        for device in self.devices:
-            await self.getOneDevice(self.devices[device]["DeviceID"], self.devices[device]["BuildingID"])
+        for device_k, device_v in self.devices.items():
+            await self.getOneDevice(device_k, device_v["DeviceID"], device_v["BuildingID"])
 
         return self.devices
 
@@ -218,8 +228,9 @@ class Melcloud:
             if desiredState.get("H") is not None:
                 self.ata["VaneHorizontal"] = self.horizontalVaneTranslate[desiredState["H"]]
                 self.ata["EffectiveFlags"] |= 0x100
-
-            self.ata = await self._doSession(method="POST", url="https://app.melcloud.com/Mitsubishi.Wifi.Client/Device/SetAta", headers=self.headers, data=ujson.dumps(self.ata))
+            
+            await asyncio.sleep(60)
+            self.ata = await self._doSession(method="POST", url="/Mitsubishi.Wifi.Client/Device/SetAta", headers=self.headers, data=ujson.dumps(self.ata))
 
             self.ata["EffectiveFlags"] = 0
 
