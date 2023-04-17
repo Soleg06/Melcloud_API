@@ -236,7 +236,7 @@ class Melcloud:
 
             response = self.session.post(" https://app.melcloud.com/Mitsubishi.Wifi.Client/Device/SetAta", headers=self.headers, data=json.dumps(self.ata))
             # response.raise_for_status()
-            self.ata = json.loads(response.text)
+            self.ata = response.json()
             self.ata["EffectiveFlags"] = 0
 
         except Exception as e:
