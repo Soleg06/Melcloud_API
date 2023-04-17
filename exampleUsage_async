@@ -2,26 +2,54 @@
 # -*- coding: utf-8 -*-
 import asyncio
 
-from melcloudAPI_async import *
+from melcloudAPI_async import Melcloud
 from pprint import pprint
 
 
+class MelcloudDevice:
+
+    mc = None
+    _username = "firstname.lastname@someting.com"
+    _password = "**********"
+
+    def __init__(self, **param):
+        self.name = param.get("name", None)
+
+    @classmethod
+    async def create(cls, **param):
+        if cls.mc is None:
+            cls.mc = Melcloud()
+            await cls.mc.login(cls._username, cls._password)
+        instance = cls(**param)
+        print(f"initializing Melcloud device {instance.name}...")
+        await instance._getState()
+        return instance
+
+    async def _getState(self, **param):
+        self._hvacStatePrevius = await self.mc.getOneDevice(self.name)
+
+
+    async def _setOneDeviceInfo(self, desiredState):
+        try:
+            await self._getState()
+            return await self.mc.setOneDeviceInfo(self.name, desiredState)
+
+        except Exception as e:
+            print("Error ", e)
+            return False
+        
+        
 async def main():
     
-    mc = Melcloud()
-    await mc.login("firstname.lastname@someting.com","**********")
+    Vp_nere = await MelcloudDevice.create(name="Vp_nere")
+    Vp_uppe = await MelcloudDevice.create(name="Vp_uppe")
 
-    mel_devinfo = await mc.getAllDevice()
-    pprint(mel_devinfo)
-
-    vp_uppe = mel_devinfo["Vp_uppe"]["CurrentState"]
-    pprint(vp_uppe)
-
-    await mc.printDevicesInfo()
-    #mc.setOneDeviceInfo("Vp_nere", {"P":0, "M":99, "T":98, "F":97, "H":96, "V":95})
-    #mc.setOneDeviceInfo("Vp_nere", {"T":21})
-    #mc.setOneDeviceInfo("Vp_uppe", {"P":1})
-    #await mc.logout()
+    state = await Vp_nere._getState()
+    print(state)
+    state = await Vp_uppe._getState()
+    print(state)
+    
+    await Vp_nere._setOneDeviceInfo({"T":22})
 
     
 asyncio.run(main())
