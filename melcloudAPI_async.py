@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import asyncio
-from pprint import pprint
+import structlog
 
 import aiohttp
 import arrow
@@ -12,6 +12,8 @@ from API.staffstuff_asyncio import MyLock
 
 
 class Melcloud:
+    
+    log = structlog.get_logger(__name__)
 
     powerModeTranslate = {
         0: False,
@@ -69,8 +71,9 @@ class Melcloud:
                     return await response.json()
                 except:
                     return await response.text()
+                
         except Exception as e:
-            print(f"Error occurred: {e}")
+            self.log.error("Exception in _doSession", error=e)
             return None
 
     async def login(self):
@@ -90,13 +93,13 @@ class Melcloud:
                 await self.getDevices()
 
         except Exception as e:
-            print(e)
+            self.log.error("Exception in login", error=e)
 
     async def _validateToken(self):
         now = arrow.now("Europe/Stockholm")
         await Melcloud.validateLock.acquire()
         if now >= self.tokenExpires:
-            print("Melcloud logging in again")
+            self.log.warning("Melcloud logging in again")
             await self.login()
         Melcloud.validateLock.release()
 
@@ -136,7 +139,7 @@ class Melcloud:
                                                 }
 
         except Exception as e:
-            print(e)
+            self.log.error("Exception in getDevices", error=e)
 
     async def getOneDevice(self, deviceName):
         params = {
@@ -158,7 +161,7 @@ class Melcloud:
                                                         }
 
         except Exception as e:
-            print(e)
+            self.log.error("Exception in getOneDevice", error=e)
 
         return self.devices[deviceName]["CurrentState"]
 
@@ -233,5 +236,5 @@ class Melcloud:
             return desiredState
 
         except Exception as e:
-            print(e)
+            self.log.error("Exception in setOneDeviceInfo", error=e)
             return False
