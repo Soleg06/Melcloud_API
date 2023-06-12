@@ -72,6 +72,10 @@ class Melcloud:
                 except:
                     return await response.text()
                 
+        except aiohttp.ClientConnectorError as e:
+            self.log.error("Exception in _doSession Failed to connect to host", error=e)
+            pass
+                
         except Exception as e:
             self.log.error("Exception in _doSession", error=e)
             return None
@@ -99,7 +103,7 @@ class Melcloud:
         now = arrow.now("Europe/Stockholm")
         await Melcloud.validateLock.acquire()
         if now >= self.tokenExpires:
-            self.log.warning("Melcloud logging in again")
+            self.log.info("Melcloud logging in again")
             await self.login()
         Melcloud.validateLock.release()
 
@@ -163,7 +167,8 @@ class Melcloud:
         except Exception as e:
             self.log.error("Exception in getOneDevice", error=e)
 
-        return self.devices[deviceName]["CurrentState"]
+        #return self.devices[deviceName]["CurrentState"]
+        return self.devices[deviceName].copy()
 
     # async def getAllDevice(self):
     #    await self._validateToken()
