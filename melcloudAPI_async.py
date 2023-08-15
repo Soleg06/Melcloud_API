@@ -81,6 +81,7 @@ class Melcloud:
             return None
 
     async def login(self):
+        self.log.info("trying login")
         data = {
             "Email": self.username,
             "Password": self.password,
