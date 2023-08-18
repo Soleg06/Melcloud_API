@@ -8,7 +8,7 @@ import aiohttp
 import arrow
 import ujson
 
-from API.staffstuff_asyncio import MyLock
+#from API.staffstuff_asyncio import MyLock
 
 
 class Melcloud:
@@ -51,7 +51,8 @@ class Melcloud:
 
     devices = {}
     ata = {}
-    validateLock = MyLock()
+    validateSemaphore = asyncio.Semaphore(1)
+    doSessionSemaphore = asyncio.Semaphore(1)
 
     def __init__(self, user, password):
         self.username = user
@@ -64,21 +65,22 @@ class Melcloud:
         self.session = aiohttp.ClientSession(base_url="https://app.melcloud.com")
 
     async def _doSession(self, method, url, headers, data=None, params=None, auth=None):
-        try:
-            await asyncio.sleep(1)
-            async with self.session.request(method=method, url=url, headers=headers, data=data, params=params, auth=auth) as response:
-                try:
-                    return await response.json()
-                except:
-                    return await response.text()
-                
-        except aiohttp.ClientConnectorError as e:
-            self.log.error("Exception in _doSession Failed to connect to host", error=e)
-            pass
-                
-        except Exception as e:
-            self.log.error("Exception in _doSession", error=e)
-            return None
+        async with Melcloud.doSessionSemaphore:
+            try:
+                await asyncio.sleep(1)
+                async with self.session.request(method=method, url=url, headers=headers, data=data, params=params, auth=auth) as response:
+                    try:
+                        return await response.json()
+                    except:
+                        return await response.text()
+                    
+            except aiohttp.ClientConnectorError as e:
+                self.log.error("Exception in _doSession Failed to connect to host", error=e)
+                pass
+                    
+            except Exception as e:
+                self.log.error("Exception in _doSession", error=e)
+                return None
 
     async def login(self):
         self.log.info("trying login")
@@ -102,11 +104,12 @@ class Melcloud:
 
     async def _validateToken(self):
         now = arrow.now("Europe/Stockholm")
-        await Melcloud.validateLock.acquire()
-        if now >= self.tokenExpires:
-            self.log.info("Melcloud logging in again")
-            await self.login()
-        Melcloud.validateLock.release()
+        #await Melcloud.validateLock.acquire()
+        async with Melcloud.validateSemaphore:
+            if now >= self.tokenExpires:
+                self.log.info("Melcloud logging in again")
+                await self.login()
+            #Melcloud.validateLock.release()
 
     def _lookupValue(self, di, value):
         for key, val in di.items():
