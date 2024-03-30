@@ -7,26 +7,25 @@ import structlog
 import aiohttp
 import arrow
 import ujson
+import copy
 
-#from API.staffstuff_asyncio import MyLock
+# from API.staffstuff_asyncio import MyLock
 
 
 class Melcloud:
-    
+
     log = structlog.get_logger(__name__)
 
     powerModeTranslate = {
         0: False,
-        1: True
-    }
+        1: True}
 
     operationModeTranslate = {
         0: 1,  # Heat
         1: 3,  # AC
         2: 8,  # Auto
         4: 7,  # Fan
-        5: 2   # Dry
-    }
+        5: 2}   # Dry
 
     horizontalVaneTranslate = {
         0: 0,   # _Auto
@@ -36,8 +35,7 @@ class Melcloud:
         4: 4,   # Pos 4
         5: 5,   # Pos 5
         6: 8,   # Split
-        7: 12   # Swing
-    }
+        7: 12}   # Swing
 
     verticalVaneTranslate = {
         0: 0,   # _Auto
@@ -46,13 +44,14 @@ class Melcloud:
         3: 3,   # Pos 3
         4: 4,   # Pos 4
         5: 5,   # Pos 5
-        6: 7    # Swing
-    }
+        6: 7}    # Swing
 
     devices = {}
     ata = {}
     validateSemaphore = asyncio.Semaphore(1)
     doSessionSemaphore = asyncio.Semaphore(1)
+    RETRIES = 3
+    RETRY_DELAY = 10  # seconds
 
     def __init__(self, user, password):
         self.username = user
@@ -65,51 +64,59 @@ class Melcloud:
         self.session = aiohttp.ClientSession(base_url="https://app.melcloud.com")
 
     async def _doSession(self, method, url, headers, data=None, params=None, auth=None):
-        async with Melcloud.doSessionSemaphore:
+        out = {}
+        for i in range(self.RETRIES):
             try:
-                await asyncio.sleep(1)
-                async with self.session.request(method=method, url=url, headers=headers, data=data, params=params, auth=auth) as response:
-                    try:
-                        return await response.json()
-                    except:
-                        return await response.text()
-                    
-            except aiohttp.ClientConnectorError as e:
-                self.log.error("Exception in _doSession Failed to connect to host", error=e)
-                pass
-                    
+                async with Melcloud.doSessionSemaphore:
+                    await asyncio.sleep(1)
+                    async with self.session.request(method=method, url=url, headers=headers, data=data, params=params, auth=auth) as response:
+                        try:
+                            return await response.json()
+                        except:
+                            return await response.text()
+
             except Exception as e:
-                self.log.error("Exception in _doSession", error=e)
-                return None
+                self.log.error("Exception in _doRequest", error=e)
+                if i < self.RETRIES - 1:
+                    self.log.warning(f"Retrying in {self.RETRY_DELAY} seconds...")
+                    await asyncio.sleep(self.RETRY_DELAY)
+                else:
+                    self.log.warning("Max retries reached. Attempting logon...")
+                    await self.login()
+                    i = -1
 
     async def login(self):
-        self.log.info("trying login")
-        data = {
-            "Email": self.username,
-            "Password": self.password,
-            "Language": 18,
-            "AppVersion": "1.23.4.0"
-        }
+        for i in range(self.RETRIES):
+            try:
+                self.log.info("trying login")
+                data = {"Email": self.username,
+                        "Password": self.password,
+                        "Language": 18,
+                        "AppVersion": "1.23.4.0"}
 
-        try:
-            out = await self._doSession(method="POST", url="/Mitsubishi.Wifi.Client/Login/ClientLogin", headers=self.headers, data=ujson.dumps(data))
-            token = out['LoginData']['ContextKey']
-            self.tokenExpires = arrow.get(out['LoginData']['Expiry']).to("Europe/Stockholm")
-            self.headers["X-MitsContextKey"] = token
-            if not Melcloud.devices:
-                await self.getDevices()
+                out = await self._doSession(method="POST", url="/Mitsubishi.Wifi.Client/Login/ClientLogin", headers=self.headers, data=ujson.dumps(data))
+                if out is not None and 'LoginData' in out:
+                    token = out['LoginData']['ContextKey']
+                    self.log.info("login success")
+                    self.tokenExpires = arrow.get(out['LoginData']['Expiry']).to("Europe/Stockholm")
+                    self.headers["X-MitsContextKey"] = token
+                    if not Melcloud.devices:
+                        await self.getDevices()
+                    break
 
-        except Exception as e:
-            self.log.error("Exception in login", error=e)
+            except Exception as e:
+                self.log.error("Melcloud exception in login",  out=out, error=e)
+
+            if i < self.RETRIES - 1:
+                self.log.info(f"Melcloud retrying login in {self.RETRY_DELAY} seconds...")
+                await asyncio.sleep(self.RETRY_DELAY)
 
     async def _validateToken(self):
         now = arrow.now("Europe/Stockholm")
-        #await Melcloud.validateLock.acquire()
         async with Melcloud.validateSemaphore:
             if now >= self.tokenExpires:
                 self.log.info("Melcloud logging in again")
                 await self.login()
-            #Melcloud.validateLock.release()
 
     def _lookupValue(self, di, value):
         for key, val in di.items():
@@ -118,6 +125,7 @@ class Melcloud:
         return None
 
     async def logout(self):
+        self.log.info("logout")
         await self.session.close()
 
     async def getDevices(self):
@@ -143,59 +151,54 @@ class Melcloud:
                 Melcloud.devices[deviceName] = {"DeviceID": device["DeviceID"],
                                                 "BuildingID": device["BuildingID"],
                                                 "CurrentEnergyConsumed": device["Device"]["CurrentEnergyConsumed"],
-                                                "LastTimeStamp": arrow.get(device["Device"]["LastTimeStamp"]).format("YYYY-MM-DD HH:mm:ss")
-                                                }
+                                                "LastTimeStamp": arrow.get(device["Device"]["LastTimeStamp"]).format("YYYY-MM-DD HH:mm:ss")}
 
         except Exception as e:
             self.log.error("Exception in getDevices", error=e)
 
     async def getOneDevice(self, deviceName):
-        params = {
-            "id": Melcloud.devices[deviceName]['DeviceID'],
-            "buildingID": Melcloud.devices[deviceName]['BuildingID']
-        }
         try:
             await self._validateToken()
+            if not Melcloud.devices:
+                await self.getDevices()
+
+            params = {"id": Melcloud.devices[deviceName]['DeviceID'],
+                      "buildingID": Melcloud.devices[deviceName]['BuildingID']}
+
             Melcloud.ata[deviceName] = await self._doSession(method="GET", url="/Mitsubishi.Wifi.Client/Device/Get", headers=self.headers, params=params)
 
-            self.devices[deviceName]["RoomTemp"] = Melcloud.ata[deviceName]["RoomTemperature"]
-            self.devices[deviceName]["hasPendingCommand"] = Melcloud.ata[deviceName]["HasPendingCommand"]
-            self.devices[deviceName]["CurrentState"] = {"P": self._lookupValue(self.powerModeTranslate, Melcloud.ata[deviceName]["Power"]),
-                                                        "M": self._lookupValue(self.operationModeTranslate, Melcloud.ata[deviceName]["OperationMode"]),
-                                                        "T": Melcloud.ata[deviceName]["SetTemperature"],
-                                                        "F": Melcloud.ata[deviceName]["SetFanSpeed"],
-                                                        "V": self._lookupValue(self.verticalVaneTranslate, Melcloud.ata[deviceName]["VaneVertical"]),
-                                                        "H": self._lookupValue(self.horizontalVaneTranslate, Melcloud.ata[deviceName]["VaneHorizontal"])
-                                                        }
+            self.devices[deviceName] = {"RoomTemp": Melcloud.ata[deviceName]["RoomTemperature"],
+                                        "LastCommunication": arrow.get(Melcloud.ata[deviceName]["LastCommunication"]).to("Europe/Stockholm").format("YYYY-MM-DD HH:mm:ss"),
+                                        "hasPendingCommand": Melcloud.ata[deviceName]["HasPendingCommand"],
+                                        "CurrentState": {"P": self._lookupValue(self.powerModeTranslate, Melcloud.ata[deviceName]["Power"]),
+                                                         "M": self._lookupValue(self.operationModeTranslate, Melcloud.ata[deviceName]["OperationMode"]),
+                                                         "T": Melcloud.ata[deviceName]["SetTemperature"],
+                                                         "F": Melcloud.ata[deviceName]["SetFanSpeed"],
+                                                         "V": self._lookupValue(self.verticalVaneTranslate, Melcloud.ata[deviceName]["VaneVertical"]),
+                                                         "H": self._lookupValue(self.horizontalVaneTranslate, Melcloud.ata[deviceName]["VaneHorizontal"])}}
+
+            # return self.devices[deviceName]["CurrentState"]
+            return copy.deepcopy(self.devices[deviceName])
 
         except Exception as e:
-            self.log.error("Exception in getOneDevice", error=e)
+            self.log.error("Exception in getOneDevice", deviceName=deviceName, error=e)
 
-        #return self.devices[deviceName]["CurrentState"]
-        return self.devices[deviceName].copy()
+    async def getAllDevice(self):
+        await self._validateToken()
+        if not Melcloud.devices:
+            await self.getDevices()
 
-    # async def getAllDevice(self):
-    #    await self._validateToken()
-    #    await self.getDevices()
+        for device_k, device_v in Melcloud.devices.items():
+            await self.getOneDevice(device_k)
 
-    #    for device_k, device_v in Melcloud.devices.items():
-    #        await self.getOneDevice(device_k, device_v["DeviceID"], device_v["BuildingID"])
-
-    #    return Melcloud.devices
+        return Melcloud.devices
 
     async def getDevicesInfo(self):
         return Melcloud.devices
 
-    # def printDevicesInfo(self):
-    #    for device in Melcloud.devices:
-    #        print(f"{device} :")
-    #        print(f"DeviceID: {Melcloud.devices[device]['DeviceID']}")
-    #        print(f"BuildingID: {Melcloud.devices[device]['BuildingID']}")
-    #        print(f"CurrentEnergyConsumed: {Melcloud.devices[device]['CurrentEnergyConsumed']}")
-    #        print(f"LastTimeStamp: {Melcloud.devices[device]['LastTimeStamp']}")
-    #        print(f"RoomTemperature: {Melcloud.devices[device]['RoomTemp']}")
-    #        print(f"""P : {Melcloud.devices[device]["CurrentState"]['P']}, M : {Melcloud.devices[device]["CurrentState"]['M']}, T : {Melcloud.devices[device]["CurrentState"]['T']}, F : {Melcloud.devices[device]["CurrentState"]['F']}, V : {Melcloud.devices[device]["CurrentState"]['V']}, H : {Melcloud.devices[device]["CurrentState"]['H']}""")
-    #        print("\n")
+    def printDevicesInfo(self):
+        for device in Melcloud.devices:
+            self.printOneDevicesInfo(device)
 
     def printOneDevicesInfo(self, deviceName):
         print(f"{deviceName} :")
@@ -242,8 +245,8 @@ class Melcloud:
 
             Melcloud.ata[deviceName]["EffectiveFlags"] = 0
 
-            return desiredState
+            return "OK"
 
         except Exception as e:
-            self.log.error("Exception in setOneDeviceInfo", error=e)
+            self.log.error("Exception in setOneDeviceInfo", deviceName=deviceName, error=e)
             return False
