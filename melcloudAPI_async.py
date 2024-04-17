@@ -60,17 +60,10 @@ class Melcloud:
     RETRIES = 3
     RETRY_DELAY = 300  # seconds
     ERROR_DELAY = 3*60*60  # seconds
-    headers = {
-        "Content-Type": "application/json",
-        "Host": "app.melcloud.com",
-        "Cache-Control": "no-cache"}
-
-    data = {"Email": "humla2brumme@gmail.com",
-            "Password": "Piposkalis06",
-            "Language": 18,
-            "AppVersion": "1.32.1.0",
-            "Persist": False,
-            "CaptchaResponse": None}
+    data = None
+    headers = {"Content-Type": "application/json",
+               "Host": "app.melcloud.com",
+               "Cache-Control": "no-cache"}
 
     tokenFileName = "/home/staffan/olis/olis_melcloud/tokenfile.txt"
     tokenFileRead = False
@@ -85,8 +78,12 @@ class Melcloud:
     session = aiohttp.ClientSession(base_url="https://app.melcloud.com")
 
     def __init__(self, user, password):
-        self.username = user
-        self.password = password
+        Melcloud.data = {"Email": user,
+                         "Password": password,
+                         "Language": 18,
+                         "AppVersion": "1.32.1.0",
+                         "Persist": False,
+                         "CaptchaResponse": None}
 
     @classmethod
     async def _readFileAsync(cls, filename):
@@ -151,7 +148,7 @@ class Melcloud:
                     cls.ata[deviceName][subkey] |= mask
 
     @classmethod
-    async def _doSession(cls, loginCall=False, **params):  # needed to run allways
+    async def _doSession(cls, loginCall=False, **params):
         async with cls.doSessionLock:
             if not (loginCall or await cls._tokenValid()):
                 return
@@ -351,7 +348,7 @@ class Melcloud:
     async def getOneDeviceInfo(cls, deviceName):
         if not await cls._getAta(deviceName):
             await cls.getOneDevice(deviceName)
-            
+
         return await cls._returnOneAtaInfo(deviceName)
 
     @classmethod
