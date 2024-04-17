@@ -2,14 +2,13 @@
 # -*- coding: utf-8 -*-
 
 import asyncio
-import structlog
+
+import os
+import ujson
 
 import aiohttp
 import arrow
-import ujson
-import copy
-
-# from API.staffstuff_asyncio import MyLock
+import structlog
 
 
 class Melcloud:
@@ -48,205 +47,392 @@ class Melcloud:
 
     devices = {}
     ata = {}
-    validateSemaphore = asyncio.Semaphore(1)
-    doSessionSemaphore = asyncio.Semaphore(1)
+    validateLock = asyncio.Lock()
+    doSessionLock = asyncio.Lock()
+    loginLock = asyncio.Lock()
+    getDevicesLock = asyncio.Lock()
+    setOneDeviceLock = asyncio.Lock()
+    getOneDeviceLock = asyncio.Lock()
+    fileReadLock = asyncio.Lock()
+    fileWriteLock = asyncio.Lock()
+    deviceLock = asyncio.Lock()
+    ataLock = asyncio.Lock()
     RETRIES = 3
-    RETRY_DELAY = 10  # seconds
+    RETRY_DELAY = 300  # seconds
+    ERROR_DELAY = 3*60*60  # seconds
+    headers = {
+        "Content-Type": "application/json",
+        "Host": "app.melcloud.com",
+        "Cache-Control": "no-cache"}
+
+    data = {"Email": "humla2brumme@gmail.com",
+            "Password": "Piposkalis06",
+            "Language": 18,
+            "AppVersion": "1.32.1.0",
+            "Persist": False,
+            "CaptchaResponse": None}
+
+    tokenFileName = "/home/staffan/olis/olis_melcloud/tokenfile.txt"
+    tokenFileRead = False
+    tokenExpires = None
+
+    deviceInfoFileName = "/home/staffan/olis/olis_melcloud/deviceinfofile.txt"
+    deviceFileRead = False
+
+    lastSessionFileName = "/home/staffan/olis/olis_melcloud/lastsessionfile.txt"
+    # lastSessionFileRead = False
+
+    session = aiohttp.ClientSession(base_url="https://app.melcloud.com")
 
     def __init__(self, user, password):
         self.username = user
         self.password = password
-        self.headers = {
-            "Content-Type": "application/json",
-            "Host": "app.melcloud.com",
-            "Cache-Control": "no-cache"
-        }
-        self.session = aiohttp.ClientSession(base_url="https://app.melcloud.com")
 
-    async def _doSession(self, method, url, headers, data=None, params=None, auth=None):
-        out = {}
-        for i in range(self.RETRIES):
-            try:
-                async with Melcloud.doSessionSemaphore:
-                    await asyncio.sleep(1)
-                    async with self.session.request(method=method, url=url, headers=headers, data=data, params=params, auth=auth) as response:
-                        try:
-                            return await response.json()
-                        except:
-                            return await response.text()
+    @classmethod
+    async def _readFileAsync(cls, filename):
+        async with cls.fileReadLock:
+            if os.path.exists(filename):
+                with open(filename, mode="r") as file:
+                    contents = ujson.load(file)
+                    return contents
 
-            except Exception as e:
-                self.log.error("Exception in _doRequest", error=e)
-                if i < self.RETRIES - 1:
-                    self.log.warning(f"Retrying in {self.RETRY_DELAY} seconds...")
-                    await asyncio.sleep(self.RETRY_DELAY)
+    @classmethod
+    async def _writeFileAsync(cls, filename, contents):
+        async with cls.fileWriteLock:
+            with open(filename, mode="w") as file:
+                ujson.dump(contents, file)
+
+    @classmethod
+    async def _getDevice(cls, deviceName=None, subkey=None):
+        async with cls.deviceLock:
+            if cls.devices is None or deviceName not in cls.devices:
+                return None
+            if deviceName is not None:
+                if subkey is None:
+                    return cls.devices[deviceName]
                 else:
-                    self.log.warning("Max retries reached. Attempting logon...")
-                    await self.login()
-                    i = -1
+                    return cls.devices[deviceName].get(subkey)
+            else:
+                return cls.devices
 
-    async def login(self):
-        for i in range(self.RETRIES):
-            try:
-                self.log.info("trying login")
-                data = {"Email": self.username,
-                        "Password": self.password,
-                        "Language": 18,
-                        "AppVersion": "1.23.4.0"}
+    @classmethod
+    async def _setDevice(cls,  newValue, deviceName=None, subkey=None):
+        async with cls.deviceLock:
+            if deviceName is not None:
+                if subkey is None:
+                    cls.devices[deviceName] = newValue
+                else:
+                    cls.devices[deviceName][subkey] = newValue
+            else:
+                cls.devices = newValue
 
-                out = await self._doSession(method="POST", url="/Mitsubishi.Wifi.Client/Login/ClientLogin", headers=self.headers, data=ujson.dumps(data))
-                if out is not None and 'LoginData' in out:
-                    token = out['LoginData']['ContextKey']
-                    self.log.info("login success")
-                    self.tokenExpires = arrow.get(out['LoginData']['Expiry']).to("Europe/Stockholm")
-                    self.headers["X-MitsContextKey"] = token
-                    if not Melcloud.devices:
-                        await self.getDevices()
-                    break
+    @classmethod
+    async def _getAta(cls, deviceName, subkey=None):
+        async with cls.ataLock:
+            if cls.ata is None or deviceName not in cls.ata:
+                return None
+            if subkey is None:
+                return cls.ata[deviceName]
+            else:
+                return cls.ata[deviceName].get(subkey)
 
-            except Exception as e:
-                self.log.error("Melcloud exception in login",  out=out, error=e)
+    @classmethod
+    async def _setAta(cls, deviceName, newValue, subkey=None, mask=None):
+        async with cls.ataLock:
+            if subkey is None:
+                if mask is None:
+                    cls.ata[deviceName] = newValue
+                else:
+                    cls.ata[deviceName] |= mask
+            else:
+                if mask is None:
+                    cls.ata[deviceName][subkey] = newValue
+                else:
+                    cls.ata[deviceName][subkey] |= mask
 
-            if i < self.RETRIES - 1:
-                self.log.info(f"Melcloud retrying login in {self.RETRY_DELAY} seconds...")
-                await asyncio.sleep(self.RETRY_DELAY)
+    @classmethod
+    async def _doSession(cls, loginCall=False, **params):  # needed to run allways
+        async with cls.doSessionLock:
+            if not (loginCall or await cls._tokenValid()):
+                return
 
-    async def _validateToken(self):
+            _lastSessionFromFile = await cls._readFileAsync(cls.lastSessionFileName)
+
+            if _lastSessionFromFile:
+                cls.log.info("Melcloud reading lastsession time from file")
+                _lastSessionTime = arrow.get(_lastSessionFromFile.get("lastSessionTime"), tzinfo=("Europe/Stockholm"))
+                _lastStatus = _lastSessionFromFile.get("lastStatus")
+                _delayToNextCall = cls.ERROR_DELAY if _lastStatus != 200 else cls.RETRY_DELAY
+                _nextCallTime = _lastSessionTime.shift(seconds=_delayToNextCall)
+                _now = arrow.now("Europe/Stockholm")
+                if _nextCallTime > _now:
+                    _delaySeconds = (_nextCallTime - _now).seconds
+                    cls.log.info(f"Melcloud sleeping {_delaySeconds} before next possible call")
+                    await asyncio.sleep(_delaySeconds)
+
+            for i in range(cls.RETRIES):
+                try:
+                    async with cls.session.request(**params) as response:
+                        cls.log.info("Melcloud writing lastsession time to file")
+                        await cls._writeFileAsync(cls.lastSessionFileName, {"lastSessionTime": arrow.now("Europe/Stockholm").format("YYYY-MM-DD HH:mm:ss"), "lastStatus": 200})
+                        if response.status == 429:
+                            _result = await response.text()
+                            cls.log.error(f"Melcloud got status 429 reply...", result=_result)
+                        else:
+                            _result = await response.json()
+
+                        return _result
+
+                except Exception as e:
+                    cls.log.error("Exception in _doSession", error=e)
+                    if i > cls.RETRIES-1:  # Check if more retries are allowed
+                        cls.log.warning(f"Retrying in {cls.RETRY_DELAY} seconds...")
+
+                    else:
+                        cls.log.warning("Max retries reached. Attempting logon...")
+                        await cls.login()
+                        break
+
+    @classmethod
+    async def _validateToken(cls):
+        if not await cls._tokenValid():
+            await cls.login()
+
+    @classmethod
+    async def _tokenValid(cls):
         now = arrow.now("Europe/Stockholm")
-        async with Melcloud.validateSemaphore:
-            if now >= self.tokenExpires:
-                self.log.info("Melcloud logging in again")
-                await self.login()
+        async with cls.validateLock:
+            if cls.tokenExpires is None or now >= cls.tokenExpires:
+                return False
+        return True
 
-    def _lookupValue(self, di, value):
+    @staticmethod
+    def _lookupValue(di, value):
         for key, val in di.items():
             if val == value:
                 return key
         return None
 
-    async def logout(self):
-        self.log.info("logout")
-        await self.session.close()
+    @classmethod
+    async def login(cls):
+        async with cls.loginLock:
+            for i in range(cls.RETRIES):
+                try:
+                    if await cls._tokenValid():
+                        break
 
-    async def getDevices(self):
+                    if not cls.tokenFileRead:
+                        _tokenFromFile = await cls._readFileAsync(cls.tokenFileName)
+
+                    if not cls.tokenFileRead and _tokenFromFile:
+                        if "token" in _tokenFromFile:
+                            cls.log.info("Melcloud setting token from file")
+                            _token = _tokenFromFile.get("token")
+                            cls.headers["X-MitsContextKey"] = _token if _token else None
+                            cls.tokenExpires = arrow.get(_tokenFromFile.get("tokenExpires"), tzinfo=("Europe/Stockholm"))
+                            cls.tokenFileRead = True
+                            if not await cls._tokenValid():
+                                cls.log.info("Melcloud token from file has expired")
+                                continue
+                        else:
+                            cls.tokenFileRead = True
+                            cls.log.warning("Melcloud token file damaged")
+                            continue
+                    else:
+                        cls.log.info("Melcloud trying login")
+                        out = await cls._doSession(loginCall=True, method="POST", url="/Mitsubishi.Wifi.Client/Login/ClientLogin", headers=cls.headers, data=ujson.dumps(cls.data))
+                        if out is not None and 'LoginData' in out:
+                            _token = out['LoginData']['ContextKey']
+                            cls.headers["X-MitsContextKey"] = _token
+                            cls.tokenExpires = arrow.get(out['LoginData']['Expiry']).to("Europe/Stockholm")
+                            cls.log.info("Melcloud writing token to file")
+                            await cls._writeFileAsync(cls.tokenFileName, {"token": _token, "tokenExpires": cls.tokenExpires.format("YYYY-MM-DD HH:mm:ss")})
+                            if _token:
+                                cls.log.info("Melcloud login success")
+                                break
+                        else:
+                            if i > cls.RETRIES-1:  # Check if more retries are allowed
+                                cls.log.warning(f"Retrying in {cls.RETRY_DELAY} seconds...")
+
+                except Exception as e:
+                    cls.log.error("Melcloud exception in login",  out=out, error=e)
+                    if i > cls.RETRIES-1:  # Check if more retries are allowed
+                        cls.log.warning(f"Retrying in {cls.RETRY_DELAY} seconds...")
+
+                    else:
+                        cls.log.warning("Max retries reached. Attempting logon...")
+                        break
+
+            # if not cls.devices and await cls._tokenValid():
+                # asyncio.create_task(cls.getDevices())
+                # await cls.getDevices()
+
+    @classmethod
+    async def logout(cls):
+        cls.log.info("logout")
+        await cls.session.close()
+
+    @classmethod
+    async def getDevices(cls):
         try:
-            await self._validateToken()
-            entries = await self._doSession(method="GET", url="/Mitsubishi.Wifi.Client/User/Listdevices", headers=self.headers)
+            async with cls.getDevicesLock:
+                if await cls._getDevice():  # exit if devices already set
+                    return
 
-            allDevices = []
-            for entry in entries:
-                allDevices += entry["Structure"]["Devices"]
+                await cls._validateToken()
 
-                for area in entry["Structure"]["Areas"]:
-                    allDevices += area["Devices"]
+                if not cls.deviceFileRead:
+                    _deviceFromFile = await cls._readFileAsync(cls.deviceInfoFileName)
 
-                for floor in entry["Structure"]["Floors"]:
-                    allDevices += floor["Devices"]
+                if not cls.deviceFileRead and _deviceFromFile:
+                    cls.log.info("Melcloud setting devices from file")
+                    cls.deviceFileRead = True
+                    await cls._setDevice(_deviceFromFile.get("devices"))
 
-                    for area in floor["Areas"]:
-                        allDevices += area["Devices"]
+                else:
+                    cls.log.info("Melcloud trying getDevices")
+                    entries = await cls._doSession(method="GET", url="/Mitsubishi.Wifi.Client/User/Listdevices", headers=cls.headers)
 
-            for device in allDevices:
-                deviceName = device["DeviceName"]
-                Melcloud.devices[deviceName] = {"DeviceID": device["DeviceID"],
-                                                "BuildingID": device["BuildingID"],
-                                                "CurrentEnergyConsumed": device["Device"]["CurrentEnergyConsumed"],
-                                                "LastTimeStamp": arrow.get(device["Device"]["LastTimeStamp"]).format("YYYY-MM-DD HH:mm:ss")}
+                    allDevices = []
+                    for entry in entries:
+                        allDevices += entry["Structure"]["Devices"]
+
+                        for area in entry["Structure"]["Areas"]:
+                            allDevices += area["Devices"]
+
+                        for floor in entry["Structure"]["Floors"]:
+                            allDevices += floor["Devices"]
+                            for area in floor["Areas"]:
+                                allDevices += area["Devices"]
+
+                    for dev in allDevices:
+                        deviceName = dev["DeviceName"]
+                        await cls._setDevice({"DeviceID": dev["DeviceID"],
+                                             "BuildingID": dev["BuildingID"],
+                                              "CurrentEnergyConsumed": dev["Device"]["CurrentEnergyConsumed"],
+                                              "LastTimeStamp": arrow.get(dev["Device"]["LastTimeStamp"]).format("YYYY-MM-DD HH:mm:ss")},
+                                             deviceName)
+
+                        cls.log.info("Melcloud writing devices to file")
+                        await cls._writeFileAsync(cls.deviceInfoFileName, {"devices": cls.devices})
 
         except Exception as e:
-            self.log.error("Exception in getDevices", error=e)
+            cls.log.error("Exception in getDevices", error=e)
 
-    async def getOneDevice(self, deviceName):
+    @classmethod
+    async def getOneDevice(cls, deviceName):
         try:
-            await self._validateToken()
-            if not Melcloud.devices:
-                await self.getDevices()
+            async with cls.getOneDeviceLock:
+                cls.log.info("Melcloud trying getOneDevice", devices=cls.devices)
 
-            params = {"id": Melcloud.devices[deviceName]['DeviceID'],
-                      "buildingID": Melcloud.devices[deviceName]['BuildingID']}
+                await cls._validateToken()
+                await cls.getDevices()
 
-            Melcloud.ata[deviceName] = await self._doSession(method="GET", url="/Mitsubishi.Wifi.Client/Device/Get", headers=self.headers, params=params)
+                params = {"id": await cls._getDevice(deviceName, subkey='DeviceID'),
+                          "buildingID": await cls._getDevice(deviceName, subkey='BuildingID')}
 
-            self.devices[deviceName] = {"RoomTemp": Melcloud.ata[deviceName]["RoomTemperature"],
-                                        "LastCommunication": arrow.get(Melcloud.ata[deviceName]["LastCommunication"]).to("Europe/Stockholm").format("YYYY-MM-DD HH:mm:ss"),
-                                        "hasPendingCommand": Melcloud.ata[deviceName]["HasPendingCommand"],
-                                        "CurrentState": {"P": self._lookupValue(self.powerModeTranslate, Melcloud.ata[deviceName]["Power"]),
-                                                         "M": self._lookupValue(self.operationModeTranslate, Melcloud.ata[deviceName]["OperationMode"]),
-                                                         "T": Melcloud.ata[deviceName]["SetTemperature"],
-                                                         "F": Melcloud.ata[deviceName]["SetFanSpeed"],
-                                                         "V": self._lookupValue(self.verticalVaneTranslate, Melcloud.ata[deviceName]["VaneVertical"]),
-                                                         "H": self._lookupValue(self.horizontalVaneTranslate, Melcloud.ata[deviceName]["VaneHorizontal"])}}
-
-            # return self.devices[deviceName]["CurrentState"]
-            return copy.deepcopy(self.devices[deviceName])
+                _result = await cls._doSession(method="GET", url="/Mitsubishi.Wifi.Client/Device/Get", headers=cls.headers, params=params)
+                await cls._setAta(deviceName, _result)
+                cls.log.info("Melcloud finished getOneDevice")
 
         except Exception as e:
-            self.log.error("Exception in getOneDevice", deviceName=deviceName, error=e)
+            cls.log.error("Exception in getOneDevice", deviceName=deviceName, error=e)
 
-    async def getAllDevice(self):
-        await self._validateToken()
-        if not Melcloud.devices:
-            await self.getDevices()
+    @classmethod
+    async def getAllDevice(cls):
+        await cls._validateToken()
+        await cls.getDevices()
 
-        for device_k, device_v in Melcloud.devices.items():
-            await self.getOneDevice(device_k)
+        _dev = await cls._getDevice()
+        for dev in _dev:
+            await cls.getOneDeviceInfo(dev)
 
-        return Melcloud.devices
+    @classmethod
+    async def getOneDeviceInfo(cls, deviceName):
+        if not await cls._getAta(deviceName):
+            await cls.getOneDevice(deviceName)
+            
+        return await cls._returnOneAtaInfo(deviceName)
 
-    async def getDevicesInfo(self):
-        return Melcloud.devices
+    @classmethod
+    async def getDevicesInfo(cls):
+        return await cls._getDevice()
 
-    def printDevicesInfo(self):
-        for device in Melcloud.devices:
-            self.printOneDevicesInfo(device)
+    @classmethod
+    async def _returnOneAtaInfo(cls, deviceName):
+        return {"RoomTemp": await cls._getAta(deviceName, subkey="RoomTemperature"),
+                "LastCommunication": arrow.get(await cls._getAta(deviceName, subkey="LastCommunication")).to("Europe/Stockholm").format("YYYY-MM-DD HH:mm:ss"),
+                "hasPendingCommand": await cls._getAta(deviceName, subkey="HasPendingCommand"),
+                "CurrentState": {"P": cls._lookupValue(cls.powerModeTranslate, await cls._getAta(deviceName, subkey="Power")),
+                                 "M": cls._lookupValue(cls.operationModeTranslate, await cls._getAta(deviceName, subkey="OperationMode")),
+                                 "T": await cls._getAta(deviceName, subkey="SetTemperature"),
+                                 "F": await cls._getAta(deviceName, subkey="SetFanSpeed"),
+                                 "V": cls._lookupValue(cls.verticalVaneTranslate, await cls._getAta(deviceName, subkey="VaneVertical")),
+                                 "H": cls._lookupValue(cls.horizontalVaneTranslate, await cls._getAta(deviceName, subkey="VaneHorizontal"))}}
 
-    def printOneDevicesInfo(self, deviceName):
+    @classmethod
+    async def printDevicesInfo(cls):
+        _dev = await cls._getDevice()
+        for dev in _dev:
+            cls.printOneDevicesInfo(dev)
+
+    @classmethod
+    async def printOneDevicesInfo(cls, deviceName):
+        _dev = await cls._getDevice()
         print(f"{deviceName} :")
-        print(f"DeviceID: {Melcloud.devices[deviceName]['DeviceID']}")
-        print(f"BuildingID: {Melcloud.devices[deviceName]['BuildingID']}")
-        print(f"CurrentEnergyConsumed: {Melcloud.devices[deviceName]['CurrentEnergyConsumed']}")
-        print(f"LastTimeStamp: {Melcloud.devices[deviceName]['LastTimeStamp']}")
-        print(f"RoomTemperature: {Melcloud.devices[deviceName]['RoomTemp']}")
-        print(f"""P : {Melcloud.devices[deviceName]["CurrentState"]['P']}, M : {Melcloud.devices[deviceName]["CurrentState"]['M']}, T : {Melcloud.devices[deviceName]["CurrentState"]['T']}, F : {Melcloud.devices[deviceName]["CurrentState"]['F']}, V : {Melcloud.devices[deviceName]["CurrentState"]['V']}, H : {Melcloud.devices[deviceName]["CurrentState"]['H']}""")
-        print(f"hasPendingCommand: {Melcloud.devices[deviceName]['hasPendingCommand']}")
+        print(f"DeviceID: {_dev['DeviceID']}")
+        print(f"BuildingID: {_dev['BuildingID']}")
+        print(f"CurrentEnergyConsumed: {_dev['CurrentEnergyConsumed']}")
+        print(f"LastTimeStamp: {_dev['LastTimeStamp']}")
+        print(f"RoomTemperature: {_dev['RoomTemp']}")
+        print(f"""P : {_dev["CurrentState"]['P']}, M : {_dev["CurrentState"]['M']}, T : {_dev["CurrentState"]['T']}, F : {_dev["CurrentState"]['F']}, V : {_dev["CurrentState"]['V']}, H : {_dev["CurrentState"]['H']}""")
+        print(f"hasPendingCommand: {_dev['hasPendingCommand']}")
         print("\n")
 
-    async def setOneDeviceInfo(self, deviceName, desiredState):
+    @classmethod
+    async def setOneDeviceInfo(cls, deviceName, desiredState):
         try:
-            await self._validateToken()
-            # Melcloud.ata[deviceName]["DeviceID"] = Melcloud.devices[deviceName]["DeviceID"]
+            async with cls.setOneDeviceLock:
+                cls.log.info("Melcloud trying setOneDeviceInfo")
 
-            if desiredState.get("P") is not None:
-                Melcloud.ata[deviceName]["Power"] = self.powerModeTranslate[desiredState["P"]]
-                Melcloud.ata[deviceName]["EffectiveFlags"] |= 0x01
+                if not await cls._getAta(deviceName):
+                    await cls.getOneDevice(deviceName)
 
-            if desiredState.get("M") is not None:
-                Melcloud.ata[deviceName]["OperationMode"] = self.operationModeTranslate[desiredState["M"]]
-                Melcloud.ata[deviceName]["EffectiveFlags"] |= 0x02
+                await cls._validateToken()
 
-            if desiredState.get("T") is not None:
-                Melcloud.ata[deviceName]["SetTemperature"] = desiredState["T"]
-                Melcloud.ata[deviceName]["EffectiveFlags"] |= 0x04
+                # Melcloud.ata[deviceName]["DeviceID"] = Melcloud.devices[deviceName]["DeviceID"]
+                if desiredState.get("P") is not None:
+                    await cls._setAta(deviceName, cls.powerModeTranslate[desiredState["P"]], subkey="Power")
+                    await cls._setAta(deviceName, newValue=None, mask=0x01, subkey="EffectiveFlags")
 
-            if desiredState.get("F") is not None:
-                Melcloud.ata[deviceName]["SetFanSpeed"] = desiredState["F"]
-                Melcloud.ata[deviceName]["EffectiveFlags"] |= 0x08
+                if desiredState.get("M") is not None:
+                    await cls._setAta(deviceName, cls.operationModeTranslate[desiredState["M"]], subkey="OperationMode")
+                    await cls._setAta(deviceName, newValue=None, mask=0x02, subkey="EffectiveFlags")
 
-            if desiredState.get("V") is not None:
-                Melcloud.ata[deviceName]["VaneVertical"] = self.verticalVaneTranslate[desiredState["V"]]
-                Melcloud.ata[deviceName]["EffectiveFlags"] |= 0x10
+                if desiredState.get("T") is not None:
+                    await cls._setAta(deviceName, desiredState["T"], subkey="SetTemperature")
+                    await cls._setAta(deviceName, newValue=None, mask=0x04, subkey="EffectiveFlags")
 
-            if desiredState.get("H") is not None:
-                Melcloud.ata[deviceName]["VaneHorizontal"] = self.horizontalVaneTranslate[desiredState["H"]]
-                Melcloud.ata[deviceName]["EffectiveFlags"] |= 0x100
+                if desiredState.get("F") is not None:
+                    await cls._setAta(deviceName, desiredState["F"], subkey="SetFanSpeed")
+                    await cls._setAta(deviceName, newValue=None, mask=0x08, subkey="EffectiveFlags")
 
-            # await asyncio.sleep(60)
-            Melcloud.ata[deviceName] = await self._doSession(method="POST", url="/Mitsubishi.Wifi.Client/Device/SetAta", headers=self.headers, data=ujson.dumps(Melcloud.ata[deviceName]))
+                if desiredState.get("V") is not None:
+                    await cls._setAta(deviceName, cls.verticalVaneTranslate[desiredState["V"]], subkey="VaneVertical")
+                    await cls._setAta(deviceName, newValue=None, mask=0x10, subkey="EffectiveFlags")
 
-            Melcloud.ata[deviceName]["EffectiveFlags"] = 0
+                if desiredState.get("H") is not None:
+                    await cls._setAta(deviceName, cls.horizontalVaneTranslate[desiredState["H"]], subkey="VaneHorizontal")
+                    await cls._setAta(deviceName, newValue=None, mask=0x100, subkey="EffectiveFlags")
 
-            return "OK"
+                _result = await cls._doSession(method="POST", url="/Mitsubishi.Wifi.Client/Device/SetAta", headers=cls.headers, data=ujson.dumps(cls.ata[deviceName]))
+                await cls._setAta(deviceName, _result)
+                cls.log.info("Melcloud finished setOneDeviceInfo")
+
+                await cls._setAta(deviceName, 0, subkey="EffectiveFlags")
+
+                return "OK"
 
         except Exception as e:
-            self.log.error("Exception in setOneDeviceInfo", deviceName=deviceName, error=e)
+            cls.log.error("Exception in setOneDeviceInfo", deviceName=deviceName, error=e)
             return False
